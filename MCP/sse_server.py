@@ -101,6 +101,12 @@ def create_app():
                 await response(scope, receive, send)
                 return
             await handle_messages(scope, receive, send)
+        elif path == "/debug/tools":
+            tools = await server.list_tools(None, None)
+            tool_list = [{"name": t.name, "description": t.description} for t in tools.tools]
+            from starlette.responses import JSONResponse
+            response = JSONResponse(tool_list)
+            await response(scope, receive, send)
         else:
             response = Response("Not Found", status_code=404)
             await response(scope, receive, send)

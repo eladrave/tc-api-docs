@@ -1,10 +1,17 @@
 #!/bin/bash
 set -e
 
-# Default configuration
-PROJECT_ID=${1:-chkp-gcp-prd-kenobi-box}
-REGION="us-central1"
-SERVICE_NAME="tc-mcp-server"
+# Configuration from arguments
+PROJECT_ID=$1
+REGION=${2:-us-central1}
+SERVICE_NAME=${3:-tc-mcp-server}
+
+if [ -z "$PROJECT_ID" ]; then
+    echo "Usage: ./deploy.sh <PROJECT_ID> [REGION] [SERVICE_NAME]"
+    echo "Example: ./deploy.sh my-gcp-project us-central1 tc-mcp-server"
+    exit 1
+fi
+
 IMAGE_NAME="gcr.io/$PROJECT_ID/$SERVICE_NAME"
 
 echo "========================================================"
