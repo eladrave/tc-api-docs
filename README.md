@@ -82,6 +82,22 @@ export TC_API_KEY="token <API KEY>"
 python3 examples/menu.py
 ```
 
+### MCP Server
+
+To integrate the SDK with MCP-enabled IDEs/agents, use the server under `MCP/`. It wraps the same SDK but exposes the functionality as MCP tools/resources.
+
+```bash
+cd MCP
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e ..
+export TC_API_KEY="token <API KEY>"
+mcp dev server.py   # or python server.py
+```
+
+Once running, connect via the MCP Inspector or any compatible client using the `python server.py` command and stdin/stdout transport.
+
 ## Local Installation
 
 1. create virtual environment
