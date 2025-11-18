@@ -87,9 +87,9 @@ def create_app():
         path = scope.get("path")
         method = scope.get("method")
         
-        if path == "/sse":
+        if path == "/sse" or path == "/":
             if method != "GET":
-                logger.warning(f"Invalid method {method} for /sse")
+                logger.warning(f"Invalid method {method} for {path}")
                 response = Response("Method Not Allowed", status_code=405)
                 await response(scope, receive, send)
                 return
@@ -115,5 +115,8 @@ def create_app():
 
     return app
 
+import os
+
 if __name__ == "__main__":
-    uvicorn.run(create_app(), host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(create_app(), host="0.0.0.0", port=port)
