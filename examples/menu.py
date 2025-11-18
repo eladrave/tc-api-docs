@@ -3,9 +3,15 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from textwrap import dedent
 from typing import Dict, Tuple
 from urllib.parse import parse_qsl, urlparse
+
+# Ensure the local package is importable when running directly from examples/
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from tc_api_sdk import (
     AppointmentsAppointmentObject,
