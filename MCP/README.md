@@ -1,58 +1,110 @@
 # TutorCruncher MCP Server
 
-This folder contains a Python [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that exposes TutorCruncher API capabilities via the SDK. Any MCP-compatible agent (VS Code, Claude Desktop/Code, Cursor, etc.) can connect to it and use the provided tools/resources.
+A production-grade, streamable HTTP MCP server that exposes the TutorCruncher SDK to agentic AI workflows.
 
-## Prerequisites
+## 1. Configuration Snippet
 
-1. Python 3.10+
-2. The `mcp` package (server runtime + CLI inspector)
-3. A TutorCruncher API token with read permissions (set in `TC_API_KEY`)
+To register this tool with your MCP agent runtime, use the following configuration:
 
-## Setup
+```json
+"mcp_tools": [
+  {
+    "server_label": "tutorcruncher",
+    "url": "https://<your-mcp-server-host>/sse",
+    "type": "http",
+    "headers": {
+      "Authorization": "Bearer YOUR_TC_API_KEY"
+    }
+  }
+]
+```
 
+## 2. Example Agent Usage
+
+**Prompt:**
+> Please use the "clients_list_all_clients" tool from server "tutorcruncher" with parameters { "limit": 5, "status": "prospect" } and await the result.
+
+**JSON-RPC Request (Internal):**
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "clients_list_all_clients",
+    "arguments": {
+      "limit": 5,
+      "status": "prospect"
+    }
+  },
+  "id": 1
+}
+```
+
+**Response:**
+The server returns a JSON result containing the list of clients. If the SDK method supports streaming, the response will be delivered via SSE chunks.
+
+## 3. Setup & Deployment
+
+### Prerequisites
+- Python 3.11+
+- Docker (optional but recommended)
+- A TutorCruncher API Key
+
+### Local Setup
 ```bash
 cd MCP
 python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt  # installs the MCP runtime
-pip install -e ..                # exposes the local tc_api_sdk package
-export TC_API_KEY="token <API KEY>"
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e ..
+export TC_API_KEY="token <YOUR_KEY>" # Optional if passed via headers
+python sse_server.py
 ```
+Server listens on `http://0.0.0.0:8000`.
 
-## Running the server
-
-Two options:
-
+### Docker Deployment
 ```bash
-# Run through the MCP CLI inspector (recommended while testing)
-mcp dev server.py
+# Build
+docker build -f MCP/Dockerfile -t tc-mcp-server .
 
-# Or run directly:
-python server.py
+# Run (Option A: Server-side Auth)
+docker run -p 8000:8000 -e TC_API_KEY="token <YOUR_KEY>" tc-mcp-server
+
+# Run (Option B: Client-side Auth)
+# No env var needed; client must send Authorization header
+docker run -p 8000:8000 tc-mcp-server
 ```
 
-Both commands launch a stdin/stdout MCP server named _TutorCruncher SDK Server_. The `dev` command also opens the MCP Inspector web UI so you can invoke tools and inspect resources without configuring an IDE.
+## 4. Authentication
 
-## Tools exposed
+The server supports two authentication methods:
 
-| Tool | Description |
-| --- | --- |
-| `list_clients(status=None, limit=10)` | Retrieves a page of clients, optionally filtered by status (e.g. `prospect`) |
-| `get_client_details(client_id)` | Fetches a single client's full record |
-| `list_appointments(status='planned', limit=5)` | Fetches upcoming appointments |
-| `paginate_prospect_clients(limit=25, pages=2)` | Demonstrates multi-page traversal for prospect clients |
+1.  **Header-Based (Recommended):**
+    Pass `Authorization: Bearer <API_KEY>` or `Authorization: token <API_KEY>` in the HTTP headers. This allows multi-tenant usage where the agent provides the key.
 
-All tools return plain JSON-compatible dictionaries, making them easy to consume within agent workflows.
+2.  **Environment Variable:**
+    Set `TC_API_KEY` in the server environment. This key is used as a fallback if no header is provided.
 
-## Resources
+## 5. Tool List
 
-`tutorcruncher://schema` exposes the raw `tc_api_sdk` schema so agents can inspect metadata (resource names, endpoints, etc.) from MCP.
+The server dynamically exposes **all** available resources and methods from the `tc_api_sdk` (approx. 90+ tools).
 
-## Connecting from IDEs
+Common tools include:
+- `clients_list_all_clients`
+- `clients_get_a_client`
+- `agents_list_all_agents`
+- `appointments_list_all_appointments`
 
-Once the server runs locally, configure your MCP-enabled IDE/client with:
+## 6. Streaming Semantics
 
-- Transport: `stdio` (usually automatic for local adapters)
-- Command: `python /path/to/server.py` (ensure `TC_API_KEY` is in the environment)
+The server uses **Server-Sent Events (SSE)** for transport.
+- **Transport Streaming:** All communication happens over a persistent HTTP connection (`/sse`), allowing the server to push JSON-RPC responses asynchronously.
+- **Data Streaming:** If an SDK method returns a generator or stream, the server will push partial results as they become available (implementation dependent on SDK capabilities).
 
-Each client has its own connector settings; consult the client's MCP documentation for connection details.
+## 7. Security Checklist
+
+- [x] **Authentication:** Validates `Authorization` header or falls back to server-side key.
+- [x] **Authorization:** API key is injected into the SDK client context for every request.
+- [x] **Logging:** Structured logging captures request method, path, status, and duration.
+- [x] **Safe Argument Handling:** Tool arguments are passed as kwargs to the typed SDK methods.
+- [x] **HTTPS:** Recommended to run behind a reverse proxy (Nginx, AWS ALB) terminating TLS.

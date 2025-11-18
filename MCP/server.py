@@ -1,33 +1,54 @@
 """MCP server exposing TutorCruncher SDK functionality."""
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import parse_qsl, urlparse
+from typing import Any, Dict, List, Optional, Sequence
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import (
+    Tool,
+    TextContent,
+    ImageContent,
+    EmbeddedResource,
+    JSONRPCMessage,
+    Resource,
+)
+import mcp.types as types
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tc_api_sdk import (  # noqa: E402
-    AppointmentsAppointmentObject,
-    ClientsClientObjectVersion2,
     TutorCruncherClient,
+    models,
     spec,
 )
+from tc_api_sdk.resources import RESOURCE_CLASSES  # noqa: E402
 
-mcp = FastMCP('TutorCruncher SDK Server')
+# Initialize the server
+server = Server("TutorCruncher SDK Server")
 
+# Context variable to store API key from request
+from contextvars import ContextVar
+api_key_var: ContextVar[Optional[str]] = ContextVar("api_key", default=None)
 
 def _require_api_key() -> str:
+    # First check context var (from request header)
+    api_key = api_key_var.get()
+    if api_key:
+        return api_key
+    
+    # Fallback to environment variable
     api_key = os.environ.get('TC_API_KEY')
     if not api_key:
-        raise RuntimeError('Set the TC_API_KEY environment variable before starting the MCP server.')
+        raise RuntimeError('TC_API_KEY not found in request headers or environment variables.')
     return api_key
 
 
@@ -40,89 +61,154 @@ def _open_client() -> TutorCruncherClient:
         client.close()
 
 
-def _serialize_models(items) -> List[Dict]:
-    return [item.to_dict(exclude_none=False) if hasattr(item, 'to_dict') else item for item in items]
+def _serialize_result(result: Any) -> Any:
+    """Serialize SDK results to JSON-compatible types."""
+    if hasattr(result, 'to_dict'):
+        return result.to_dict(exclude_none=False)
+    if isinstance(result, list):
+        return [_serialize_result(item) for item in result]
+    return result
 
 
-@mcp.tool()
-def list_clients(status: Optional[str] = None, limit: int = 10) -> Dict:
-    """Return a single page of clients optionally filtered by status (prospect/live/dormant)."""
-    params: Dict[str, str | int] = {'limit': limit}
-    if status:
-        params['status'] = status
-    with _open_client() as client:
-        response = client.clients.list_all_clients(
-            params=params,
-            model=ClientsClientObjectVersion2,
-        )
-    return {
-        'count': response.count,
-        'next': response.next,
-        'results': _serialize_models(response.results),
-    }
+# Registry for dynamic tools
+# Map tool_name -> (resource_name, method_name, method_doc)
+TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {}
 
+def _register_tools():
+    """Populate the TOOL_REGISTRY with SDK methods."""
+    for resource_name, resource_cls in RESOURCE_CLASSES.items():
+        for method_name, method in inspect.getmembers(resource_cls):
+            if method_name.startswith('_') or method_name == 'metadata':
+                continue
 
-@mcp.tool()
-def get_client_details(client_id: int) -> Dict:
-    """Fetch a single client by ID."""
-    with _open_client() as client:
-        result = client.clients.get_a_client(
-            id=client_id,
-            model=ClientsClientObjectVersion2,
-        )
-    if result is None:
-        return {'error': f'Client {client_id} not found'}
-    return result.to_dict(exclude_none=False)
-
-
-@mcp.tool()
-def list_appointments(status: str = 'planned', limit: int = 5) -> Dict:
-    """Return recent appointments filtered by status (planned/complete/etc)."""
-    params: Dict[str, str | int] = {'limit': limit}
-    if status:
-        params['status'] = status
-    with _open_client() as client:
-        response = client.appointments.list_all_appointments(
-            params=params,
-            model=AppointmentsAppointmentObject,
-        )
-    return {
-        'count': response.count,
-        'next': response.next,
-        'results': _serialize_models(response.results),
-    }
-
-
-@mcp.tool()
-def paginate_prospect_clients(limit: int = 25, pages: int = 2) -> Dict:
-    """Collect multiple pages of prospect clients to demonstrate pagination."""
-    params: Dict[str, str | int] = {'limit': limit, 'status': 'prospect'}
-    collected: List[Dict] = []
-    page_count = 0
-    with _open_client() as client:
-        while page_count < pages:
-            response = client.clients.list_all_clients(
-                params=params,
-                model=ClientsClientObjectVersion2,
-            )
-            collected.extend(_serialize_models(response.results))
-            page_count += 1
-            if not response.next:
-                break
-            next_query = dict(parse_qsl(urlparse(response.next).query))
-            params = {
-                'limit': int(next_query.get('limit', limit)),
-                'offset': int(next_query.get('offset', params.get('offset', 0))),
-                'status': next_query.get('status', 'prospect'),
+            tool_name = f'{resource_name}_{method_name}'
+            
+            # Inspect signature to build schema (simplified for now)
+            # We'll just document it in the description as the SDK is dynamic
+            sig = inspect.signature(method)
+            doc = inspect.getdoc(method) or f"Call {resource_name}.{method_name}"
+            
+            TOOL_REGISTRY[tool_name] = {
+                'resource': resource_name,
+                'method': method_name,
+                'doc': doc,
+                'signature': sig
             }
-    return {'pages_collected': page_count, 'results': collected}
+
+_register_tools()
 
 
-@mcp.resource('tutorcruncher://schema')
-def get_schema() -> Dict:
-    """Expose the TutorCruncher SDK schema description."""
-    return spec.get_schema()
+@server.list_tools()
+async def handle_list_tools() -> List[Tool]:
+    """List available tools."""
+    tools = []
+    for name, info in TOOL_REGISTRY.items():
+        # Construct a simple JSON schema for arguments
+        # For now, we'll make it generic since SDK methods are flexible
+        # Ideally we would reflect the actual signature
+        tools.append(
+            Tool(
+                name=name,
+                description=info['doc'][:100], # Truncate for brevity
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": ["string", "integer", "null"]},
+                        "params": {"type": "object"},
+                        "payload": {"type": "object"},
+                        "model": {"type": "string", "description": "Model class name"},
+                        "raw": {"type": "boolean"}
+                    },
+                    "additionalProperties": True
+                }
+            )
+        )
+    return tools
 
+
+@server.call_tool()
+async def handle_call_tool(
+    name: str, arguments: dict | None
+) -> Sequence[TextContent | ImageContent | EmbeddedResource]:
+    """Handle tool execution."""
+    if name not in TOOL_REGISTRY:
+        raise ValueError(f"Unknown tool: {name}")
+
+    info = TOOL_REGISTRY[name]
+    args = arguments or {}
+    
+    # Extract known args
+    id_arg = args.get('id')
+    params = args.get('params')
+    payload = args.get('payload')
+    model_name = args.get('model')
+    raw = args.get('raw', False)
+    
+    # Resolve model
+    model_cls = None
+    if model_name:
+        model_cls = getattr(models, model_name, None)
+        if model_cls is None:
+            return [TextContent(type="text", text=f"Error: Model '{model_name}' not found")]
+
+    # Prepare kwargs for other arguments
+    kwargs = {k: v for k, v in args.items() if k not in ['id', 'params', 'payload', 'model', 'raw']}
+
+    try:
+        with _open_client() as client:
+            resource = getattr(client, info['resource'])
+            method = getattr(resource, info['method'])
+            
+            result = method(
+                id=id_arg,
+                params=params,
+                payload=payload,
+                model=model_cls,
+                raw=raw,
+                **kwargs
+            )
+            
+            serialized = _serialize_result(result)
+            return [TextContent(type="text", text=str(serialized))]
+            
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
+
+
+@server.list_resources()
+async def handle_list_resources() -> List[Resource]:
+    return [
+        Resource(
+            uri=types.AnyUrl("tutorcruncher://schema"),
+            name="SDK Schema",
+            description="TutorCruncher SDK Schema",
+            mimeType="application/json"
+        )
+    ]
+
+
+@server.read_resource()
+async def handle_read_resource(uri: types.AnyUrl) -> str | bytes:
+    if str(uri) == "tutorcruncher://schema":
+        return str(spec.get_schema())
+    raise ValueError(f"Unknown resource: {uri}")
+
+
+async def main():
+    # Run the server using stdin/stdout
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            types.InitializationOptions(
+                server_name="TutorCruncher SDK Server",
+                server_version="0.1.0",
+                capabilities=types.ServerCapabilities(
+                    tools=types.ToolsCapability(listChanged=False),
+                    resources=types.ResourcesCapability(subscribe=False, listChanged=False),
+                ),
+            ),
+        )
 
 if __name__ == '__main__':
-    mcp.run(transport='stdio')
+    asyncio.run(main())
