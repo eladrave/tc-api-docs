@@ -73,6 +73,15 @@ with TutorCruncherClient(api_key="token <API KEY>") as client:
 
 Run `python3 scripts/build_sdk_schema.py` whenever the documentation changes. It refreshes `tc_api_sdk/generated/api_schema.json` and the auto-generated dataclasses in `tc_api_sdk/models.py`.
 
+### Examples
+
+An interactive example script lives in `examples/menu.py`. It offers predefined queries (recent clients, upcoming appointments, paginated prospect listings) so you can see pagination, filters, and dataclass usage in action:
+
+```bash
+export TC_API_KEY="token <API KEY>"
+python3 examples/menu.py
+```
+
 ## Local Installation
 
 1. create virtual environment
