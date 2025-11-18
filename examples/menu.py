@@ -44,8 +44,8 @@ def show_upcoming_appointments(client: TutorCruncherClient) -> None:
     )
     print(f'Reported total appointments: {response.count}')
     for item in response.results:
-        contractor_count = len(item.cjas)
-        recipient_count = len(item.rcras)
+        contractor_count = len(item.cjas or [])
+        recipient_count = len(item.rcras or [])
         print(
             f'  #{item.id} "{item.topic}" start={item.start} '
             f'contractors={contractor_count} recipients={recipient_count}'
